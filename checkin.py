@@ -4,14 +4,13 @@ import requests
 import time
 import re
 import html
-from bs4 import BeautifulSoup
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # 转义 HTML 字符，防止 Telegram 报错
 def safe_html(text):
     return html.escape(str(text)) if text else ""
 
-# 邮箱脱敏处理 (y2kcan@qq.com -> y2k***@qq.com)
+# 邮箱脱敏处理
 def mask_email(email):
     if "@" not in email:
         return email
@@ -19,6 +18,24 @@ def mask_email(email):
     if len(name) <= 3:
         return f"{name}***@{domain}"
     return f"{name[:3]}***@{domain}"
+
+# 核心：过滤并精简机场的签到返回消息，剔除周年庆等冗余广告
+def clean_checkin_msg(msg):
+    if not msg:
+        return "签到结果未知"
+    
+    # 将多行文本拆开，只保留包含“获得”、“签到”、“续期”等核心反馈的行
+    lines = [line.strip() for line in msg.split('\n') if line.strip()]
+    core_keywords = ["获得", "已签到", "签到", "成功", "流量", "续期", "已经"]
+    
+    for line in lines:
+        if any(kw in line for kw in core_keywords):
+            # 过滤掉带有“折”、“折扣”、“涨价”等明显的广告行
+            if not any(ad in line for ad in ["折", "折扣", "活动时间", "涨价", "优惠"]):
+                return line
+                
+    # 如果没筛选到，就取第一行（通常是结果提示），并限制长度
+    return lines[0][:50] if lines else "签到成功"
 
 # 解析用户信息
 def fetch_and_extract_info(session, domain):
@@ -43,10 +60,9 @@ def fetch_and_extract_info(session, domain):
     }
 
     for key in user_info:
-        # 去除时间里的具体秒数，只保留到天，更美观
         val = user_info[key].group(1) if user_info[key] else "未知"
         if key == '到期时间' and len(val) > 10:
-            val = val.split(" ")[0]
+            val = val.split(" ")[0]  # 只保留日期部分
         user_info[key] = val
 
     # 提取 Clash 和 v2ray 订阅链接
@@ -60,7 +76,7 @@ def fetch_and_extract_info(session, domain):
         sub_links = (
             f"\n🔗 <b>快捷订阅</b>\n"
             f"├ <a href=\"{clash_link}\">⚡ Clash 订阅</a>\n"
-            f"└ <a href=\"{v2ray_link}\">🚀 V2ray 订阅</a>\n"
+            f"└ <a href=\"{v2ray_link}\">🚀 V2ray 订阅</a>"
         )
 
     info_template = (
@@ -94,7 +110,10 @@ def send_message(msg, bot_token, chat_id):
         print("⚠️ 提示: 未配置 BOT_TOKEN 或 CHAT_ID，跳过 Telegram 推送！")
         return
     
-    now = datetime.utcnow() + timedelta(hours=8)
+    # 采用 Python 3.12 推荐的 timezone 获取北京时间，消除 DeprecationWarning 警告
+    tz_utc_8 = timezone(timedelta(hours=8))
+    now = datetime.now(tz_utc_8)
+    
     payload = {
         "chat_id": chat_id,
         "text": f"⏰ <b>执行时间</b>: {now.strftime('%Y-%m-%d %H:%M:%S')}\n\n{msg}",
@@ -113,6 +132,7 @@ def send_message(msg, bot_token, chat_id):
 
 # 登录并签到
 def checkin(account, domain, bot_token, chat_id):
+    from bs4 import BeautifulSoup # 确保 fetch 能正常运行
     user, password = account['user'], account['pass']
     masked_user = mask_email(user)
     
@@ -164,10 +184,11 @@ def checkin(account, domain, bot_token, chat_id):
         checkin_result = {}
         print(f"⚠️ 签到请求失败: {e}")
 
-    result_msg = checkin_result.get('msg', '签到结果未知(可能已签到)')
-    result_emoji = "🎉" if checkin_result.get('ret') == 1 else "⚠️"
+    raw_msg = checkin_result.get('msg', '签到结果未知(可能已签到)')
+    cleaned_msg = clean_checkin_msg(raw_msg) # 进行核心过滤
+    result_emoji = "⚠️" if "已经" in cleaned_msg or "过" in cleaned_msg else "🎉"
     
-    status_msg = f"└ <b>状态</b>: {result_emoji} <b>{safe_html(result_msg)}</b>\n\n"
+    status_msg = f"└ <b>状态</b>: {result_emoji} <b>{safe_html(cleaned_msg)}</b>\n\n"
 
     # 获取用量信息
     user_info = fetch_and_extract_info(session, domain)
