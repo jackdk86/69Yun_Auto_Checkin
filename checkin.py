@@ -4,7 +4,7 @@ import requests
 import time
 import re
 import html
-from bs4 import BeautifulSoup  # 移动到最顶部，全局可用！
+from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, timezone
 
 # 转义 HTML 字符，防止 Telegram 报错
@@ -20,22 +20,19 @@ def mask_email(email):
         return f"{name}***@{domain}"
     return f"{name[:3]}***@{domain}"
 
-# 核心：过滤并精简机场的签到返回消息，剔除周年庆等冗余广告
+# 过滤并精简机场的签到返回消息
 def clean_checkin_msg(msg):
     if not msg:
         return "签到结果未知"
     
-    # 将多行文本拆开，只保留包含“获得”、“签到”、“续期”等核心反馈的行
     lines = [line.strip() for line in msg.split('\n') if line.strip()]
     core_keywords = ["获得", "已签到", "签到", "成功", "流量", "续期", "已经"]
     
     for line in lines:
         if any(kw in line for kw in core_keywords):
-            # 过滤掉带有“折”、“折扣”、“涨价”等明显的广告行
             if not any(ad in line for ad in ["折", "折扣", "活动时间", "涨价", "优惠"]):
                 return line
                 
-    # 如果没筛选到，就取第一行（通常是结果提示），并限制长度
     return lines[0][:50] if lines else "签到成功"
 
 # 解析用户信息
@@ -48,30 +45,32 @@ def fetch_and_extract_info(session, domain):
     except Exception as e:
         return f"❌ 请求用户信息失败: {safe_html(e)}\n"
 
+    # --- 1. 提取到期时间和剩余流量 ---
     soup = BeautifulSoup(response.text, 'html.parser')
     script_tags = soup.find_all('script')
 
     chatra_script = next((script.string for script in script_tags if script.string and 'window.ChatraIntegration' in script.string), None)
-    if not chatra_script:
-        return "⚠️ 未识别到用户信息\n"
-
-    user_info = {
-        '到期时间': re.search(r"'Class_Expire': '(.*?)'", chatra_script),
-        '剩余流量': re.search(r"'Unused_Traffic': '(.*?)'", chatra_script)
-    }
-
-    for key in user_info:
-        val = user_info[key].group(1) if user_info[key] else "未知"
-        if key == '到期时间' and len(val) > 10:
-            val = val.split(" ")[0]  # 只保留日期部分
-        user_info[key] = val
-
-    # 提取 Clash 和 v2ray 订阅链接
-    link_match = next((re.search(r"'(https://.*?/link/(.*?))\?sub=1'", str(script)) for script in script_tags if 'index.oneclickImport' in str(script) and 'clash' in str(script)), None)
     
+    user_info = {'到期时间': '未知', '剩余流量': '未知'}
+    if chatra_script:
+        expire_match = re.search(r"'Class_Expire':\s*'(.*?)'", chatra_script)
+        traffic_match = re.search(r"'Unused_Traffic':\s*'(.*?)'", chatra_script)
+        
+        expire_val = expire_match.group(1) if expire_match else "未知"
+        if len(expire_val) > 10:
+            expire_val = expire_val.split(" ")[0]  # 只保留日期
+            
+        user_info['到期时间'] = expire_val
+        user_info['剩余流量'] = traffic_match.group(1) if traffic_match else "未知"
+
+    # --- 2. 强力提取订阅链接 (全局扫描算法) ---
+    # 匹配 /link/后面跟着字母数字，并且后面有 ?sub=1 或 ?clash=1 的订阅链接特征
+    # 兼容单引号、双引号以及任何订阅域名
     sub_links = ""
-    if link_match:
-        base_link = link_match.group(1)
+    sub_match = re.search(r'(https?://[^\'"\s]+/link/[a-zA-Z0-9]+)', response.text)
+    
+    if sub_match:
+        base_link = sub_match.group(1)  # 提取出的基础订阅格式，例如 https://checkhere.top/link/xxxxxx
         clash_link = f"{base_link}?clash=1"
         v2ray_link = f"{base_link}?sub=3"
         sub_links = (
@@ -79,6 +78,8 @@ def fetch_and_extract_info(session, domain):
             f"├ <a href=\"{clash_link}\">⚡ Clash 订阅</a>\n"
             f"└ <a href=\"{v2ray_link}\">🚀 V2ray 订阅</a>"
         )
+    else:
+        print("⚠️ 未能在页面中匹配到订阅链接")
 
     info_template = (
         f"📊 <b>用量详情</b>\n"
@@ -111,7 +112,6 @@ def send_message(msg, bot_token, chat_id):
         print("⚠️ 提示: 未配置 BOT_TOKEN 或 CHAT_ID，跳过 Telegram 推送！")
         return
     
-    # 采用 Python 3.12 推荐的 timezone 获取北京时间，消除 DeprecationWarning 警告
     tz_utc_8 = timezone(timedelta(hours=8))
     now = datetime.now(tz_utc_8)
     
@@ -185,7 +185,7 @@ def checkin(account, domain, bot_token, chat_id):
         print(f"⚠️ 签到请求失败: {e}")
 
     raw_msg = checkin_result.get('msg', '签到结果未知(可能已签到)')
-    cleaned_msg = clean_checkin_msg(raw_msg) # 进行核心过滤
+    cleaned_msg = clean_checkin_msg(raw_msg)
     result_emoji = "⚠️" if "已经" in cleaned_msg or "过" in cleaned_msg else "🎉"
     
     status_msg = f"└ <b>状态</b>: {result_emoji} <b>{safe_html(cleaned_msg)}</b>\n\n"
