@@ -4,6 +4,7 @@ import requests
 import time
 import re
 import html
+from bs4 import BeautifulSoup  # 移动到最顶部，全局可用！
 from datetime import datetime, timedelta, timezone
 
 # 转义 HTML 字符，防止 Telegram 报错
@@ -132,7 +133,6 @@ def send_message(msg, bot_token, chat_id):
 
 # 登录并签到
 def checkin(account, domain, bot_token, chat_id):
-    from bs4 import BeautifulSoup # 确保 fetch 能正常运行
     user, password = account['user'], account['pass']
     masked_user = mask_email(user)
     
