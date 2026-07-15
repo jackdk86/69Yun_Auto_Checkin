@@ -35,7 +35,7 @@ def clean_checkin_msg(msg):
                 
     return lines[0][:50] if lines else "签到成功"
 
-# 解析用户信息
+# 解析用户信息并强力抓取订阅
 def fetch_and_extract_info(session, domain):
     url = f"{domain}/user"
     try:
@@ -63,20 +63,22 @@ def fetch_and_extract_info(session, domain):
         user_info['到期时间'] = expire_val
         user_info['剩余流量'] = traffic_match.group(1) if traffic_match else "未知"
 
-    # --- 2. 强力提取订阅链接 (全局扫描算法) ---
-    # 匹配 /link/后面跟着字母数字，并且后面有 ?sub=1 或 ?clash=1 的订阅链接特征
-    # 兼容单引号、双引号以及任何订阅域名
+    # --- 2. 强力提取订阅链接 (全局扫描算法 + 磨砂隐藏一键复制) ---
     sub_links = ""
+    # 匹配类似 http(s)://domain/link/xxxxxx 的订阅特征，兼容任意单双引号及域名
     sub_match = re.search(r'(https?://[^\'"\s]+/link/[a-zA-Z0-9]+)', response.text)
     
     if sub_match:
-        base_link = sub_match.group(1)  # 提取出的基础订阅格式，例如 https://checkhere.top/link/xxxxxx
+        base_link = sub_match.group(1)  # 提取出的基础订阅链接
         clash_link = f"{base_link}?clash=1"
         v2ray_link = f"{base_link}?sub=3"
+        
+        # 采用 HTML 剧透标签 <tg-spoiler> 配合等宽 <code> 标签
+        # 完美实现：默认隐藏、点击消散迷雾、同时一键复制到剪贴板的效果
         sub_links = (
-            f"\n🔗 <b>快捷订阅</b>\n"
-            f"├ <a href=\"{clash_link}\">⚡ Clash 订阅</a>\n"
-            f"└ <a href=\"{v2ray_link}\">🚀 V2ray 订阅</a>"
+            f"\n🔗 <b>快捷订阅（点击磨砂直接复制）</b>\n"
+            f"├ ⚡ <b>Clash:</b> <tg-spoiler><code>{clash_link}</code></tg-spoiler>\n"
+            f"└ 🚀 <b>V2ray:</b> <tg-spoiler><code>{v2ray_link}</code></tg-spoiler>"
         )
     else:
         print("⚠️ 未能在页面中匹配到订阅链接")
@@ -190,7 +192,7 @@ def checkin(account, domain, bot_token, chat_id):
     
     status_msg = f"└ <b>状态</b>: {result_emoji} <b>{safe_html(cleaned_msg)}</b>\n\n"
 
-    # 获取用量信息
+    # 获取用量信息与快捷订阅
     user_info = fetch_and_extract_info(session, domain)
     
     final_msg = f"{account_header}{status_msg}{user_info}"
